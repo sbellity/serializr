@@ -10,9 +10,11 @@ module Serializr
     end
     
     def self.gen_idl
-      FileUtils.mkdir_p Rails.root + "lib/serializr/"
-      schema_file = open(Rails.root + "lib/serializr/serializr_app.thrift", "w")
-      schema_file.write("namespace rb SerializrModel\n")
+      FileUtils.mkdir_p  "#{Rails.root}/lib/serializr/"
+      schema_file = open "#{Rails.root}/lib/serializr/serializr_app.thrift", "w"
+      schema_file.write "namespace rb SerializrModel\n\n"
+      schema_file.write "exception NotFoundError { \n\t1: string message \n}\n"
+      schema_file.write "exception ValidationError { \n\t1: list<string> errors \n}\n"
       services = []
       self.serialized_models.map do |klass|
         schema_file.write "\n\n#{klass.to_thrift_struct}"
@@ -33,22 +35,18 @@ module Serializr
     def self.handler
       sm = self.serialized_models
       Class.new do |k|
-        k.class_eval do 
+        k.class_eval do
           sm.map { |m| include m.thrift_handler_module }
         end
       end
-    end
-    
-    def self.processor
-      SerializrModel::SerializrApp::Processor.new(self.handler)
     end
     
     def self.rack_middleware hook_path="/thrift", protocol_factory=::Thrift::BinaryProtocolAcceleratedFactory
       [
         Serializr::Thrift::RackMiddleware, 
         {
-          :processor => self.processor, 
-          :hook_path => hook_path, 
+          :processor => SerializrModel::SerializrApp::Processor.new(self.handler.new), 
+          :hook_path => hook_path,
           :protocol_factory => protocol_factory.new 
         }
       ]
@@ -62,7 +60,9 @@ module Serializr
           :integer => "i32",
           :date => "i32",
           :boolean => "bool",
-          :text => "string"
+          :text => "string",
+          :time => "i32",
+          :datetime => "i32"
         }
         attrs = columns_hash.map do |k,v|
           num += 1
@@ -72,10 +72,14 @@ module Serializr
       end
       
       def to_thrift_service
-        services = []
+        services = ["", "# #{self.name} Service"]
         services << "list<#{self.name}> list#{self.name.pluralize}(1: i32 limit)"
-        services << "#{self.name} get#{self.name}(1: i32 id)"
-        services << "#{self.name} delete#{self.name}(1: i32 id)"
+        services << "i32 count#{self.name.pluralize}()"
+        services << "#{self.name} get#{self.name}(1: i32 id) throws (1: NotFoundError err)"
+        services << "list<#{self.name}> get#{self.name.pluralize}(1: list<i32> ids)"
+        services << "i32 delete#{self.name}(1: i32 id) throws (1: NotFoundError err)"
+        services << "i32 create#{self.name}(1: #{self.name} #{self.name.downcase}) throws (1: ValidationError err)"
+        services << "#{self.name} update#{self.name}(1: #{self.name} #{self.name.downcase})  throws (1: NotFoundError not_found_error, 2: ValidationError validation_error)"
         services
       end
       
@@ -83,24 +87,85 @@ module Serializr
         klass_name = self.name
         klass = self
         Module.new do |m|
-          m.send(:define_method, "get#{klass_name}".to_sym) do |id|
-            klass.find_by_id(id).to_thrift
+          
+          # countRecords
+          m.send(:define_method, "count#{klass_name.pluralize}".to_sym) do
+            klass.count
           end
+          
+          # getRecords
+          m.send(:define_method, "get#{klass_name.pluralize}".to_sym) do |ids|
+            klass.all(:conditions => { :id => ids }).map(&:to_thrift)
+          end
+          
+          # listRecords
           m.send(:define_method, "list#{klass_name.pluralize}".to_sym) do |limit|
             klass.all(:limit => limit).map(&:to_thrift)
           end
+          
+          # getRecord
+          m.send(:define_method, "get#{klass_name}".to_sym) do |id|
+            begin
+              klass.find(id).to_thrift
+            rescue => e
+              raise SerializrModel::NotFoundError.new "#{klass.name} ##{id} does not exist"
+            end
+          end
+          
+          # deleteRecord
           m.send(:define_method, "delete#{klass_name}".to_sym) do |id|
-            klass.destroy(id)
+            begin
+              id if klass.destroy(id)
+            rescue => e
+              raise SerializrModel::NotFoundError.new "#{klass.name} ##{id} does not exist"
+            end
+          end
+          
+          # createRecord
+          m.send(:define_method, "create#{klass_name}".to_sym) do |thrift_record|
+            record = klass.from_thrift(thrift_record)
+            begin
+              record.save!
+              record.id
+            rescue => e
+              err = SerializrModel::ValidationError.new
+              err.errors = record.errors.full_messages
+              raise err
+            end
+          end
+          
+          # updateRecord
+          m.send(:define_method, "update#{klass_name}".to_sym) do |thrift_record|
+            attrs = klass.attrs_from_thrift(thrift_record)
+            record_id = attrs.delete("id")
+            record = klass.find_by_id(record_id)
+            record.to_thrift if record.update_attributes!(attrs)
           end
         end
       end
       
+      def attrs_from_thrift rec
+        rec.struct_fields.values.inject({}) do |h,f|
+          h.merge(f[:name] => rec.send(f[:name]))
+        end
+      end
+      
+      def from_thrift rec
+        attrs = attrs_from_thrift(rec)
+        attrs.delete "id"
+        self.new(attrs)
+      end
     end
     
     module InstanceMethods
       def to_thrift
-        "SerializrModel::#{self.class.name}".constantize.new(self.serializable_hash)
+        h = self.serializable_hash.inject({}) do |hh,f|
+          v = (f[1].is_a?(Date) || f[1].is_a?(Time)) ? f[1].to_time.to_i : f[1]
+          hh.merge(f[0] => v)
+        end
+        "SerializrModel::#{self.class.name}".constantize.new(h)
       end
+      
     end
     
     class RackMiddleware
