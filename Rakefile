@@ -14,6 +14,7 @@ begin
     gem.add_development_dependency "rspec", ">= 1.2.9"
     gem.add_development_dependency "yard", ">= 0"
     gem.add_development_dependency "thrift", ">= 0.2.0"
+    gem.add_development_dependency "ruby-protobuf", ">= 0.4.4"
     gem.add_dependency "activerecord", ">= 3.0.0.beta4"
     # gem is a Gem::Specification... see http://www.rubygems.org/read/chapter/20 for additional settings
   end

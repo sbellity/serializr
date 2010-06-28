@@ -3,16 +3,16 @@ module Serializr
     extend ActiveSupport::Concern
     
     def self.require_generated_source
-      if File.exists?("#{Rails.root}/lib/serializr/gen-rb")
-        $: << "#{Rails.root}/lib/serializr/gen-rb"
-        require "#{Rails.root}/lib/serializr/gen-rb/serializr_app"
+      if File.exists?("#{Rails.root}/lib/serializr/thrift/gen-rb")
+        $: << "#{Rails.root}/lib/serializr/thrift/gen-rb"
+        require "#{Rails.root}/lib/serializr/thrift/gen-rb/serializr_app"
       end
     end
     
     def self.gen_idl
-      FileUtils.mkdir_p  "#{Rails.root}/lib/serializr/"
-      schema_file = open "#{Rails.root}/lib/serializr/serializr_app.thrift", "w"
-      schema_file.write "namespace rb SerializrModel\n\n"
+      FileUtils.mkdir_p  "#{Rails.root}/lib/serializr/thrift"
+      schema_file = open "#{Rails.root}/lib/serializr/thrift/serializr_app.thrift", "w"
+      schema_file.write "namespace rb SerializrThrift\n\n"
       schema_file.write "struct date { \n\t1: i32 timestamp \n}\n"
       schema_file.write "struct time { \n\t1: i32 timestamp \n}\n"
       schema_file.write "exception NotFoundError { \n\t1: string message \n}\n"
@@ -24,14 +24,14 @@ module Serializr
       end
       schema_file.write "\n\nservice SerializrApp { \n\t#{services.flatten.join("\n\t")} \n}"
       schema_file.close
-      system "cd #{Rails.root}/lib/serializr; thrift --gen rb serializr_app.thrift"
+      system "cd #{Rails.root}/lib/serializr/thrift; thrift --gen rb serializr_app.thrift"
     end
     
     def self.serialized_models
       Dir.glob( Rails.root + 'app/models/*' ).map do |f|
         klass = File.basename( f ).gsub( /^(.+).rb/, '\1').camelize.constantize
         klass if klass.respond_to? :to_thrift_service
-      end
+      end.compact
     end
     
     def self.handler
@@ -47,7 +47,7 @@ module Serializr
       [
         Serializr::Thrift::RackMiddleware, 
         {
-          :processor => SerializrModel::SerializrApp::Processor.new(self.handler.new), 
+          :processor => SerializrThrift::SerializrApp::Processor.new(self.handler.new), 
           :hook_path => hook_path,
           :protocol_factory => protocol_factory.new 
         }
@@ -115,7 +115,7 @@ module Serializr
             begin
               klass.find(id).to_thrift
             rescue => e
-              raise SerializrModel::NotFoundError.new "#{klass.name} ##{id} does not exist"
+              raise SerializrThrift::NotFoundError.new "#{klass.name} ##{id} does not exist"
             end
           end
           
@@ -124,7 +124,7 @@ module Serializr
             begin
               id if klass.destroy(id)
             rescue => e
-              raise SerializrModel::NotFoundError.new "#{klass.name} ##{id} does not exist"
+              raise SerializrThrift::NotFoundError.new "#{klass.name} ##{id} does not exist"
             end
           end
           
@@ -135,7 +135,7 @@ module Serializr
               record.save!
               record.id
             rescue => e
-              err = SerializrModel::ValidationError.new
+              err = SerializrThrift::ValidationError.new
               err.errors = record.errors.full_messages
               raise err
             end
@@ -154,9 +154,9 @@ module Serializr
       def attrs_from_thrift rec
         rec.struct_fields.values.inject({}) do |h,f|
           val = rec.send(f[:name])
-          if f[:class] == SerializrModel::Time
+          if f[:class] == SerializrThrift::Time
             val = Time.at val.timestamp
-          elsif f[:class] == SerializrModel::Date
+          elsif f[:class] == SerializrThrift::Date
             val = Time.at(val.timestamp).to_date
           end
           h.merge(f[:name] => val)
@@ -174,15 +174,15 @@ module Serializr
       def to_thrift
         h = self.class.columns.inject({}) do |hh,col|
           if [:time, :datetime, :timestamp].include? col.type
-            v = SerializrModel::Time.new(:timestamp => self.send(col.name).to_i)
+            v = SerializrThrift::Time.new(:timestamp => self.send(col.name).to_i)
           elsif col.type == :date
-            v = SerializrModel::Date.new(:timestamp => self.send(col.name).to_time.to_i)
+            v = SerializrThrift::Date.new(:timestamp => self.send(col.name).to_time.to_i)
           else
             v = self.send(col.name)
           end
           hh.merge(col.name => v)
         end
-        "SerializrModel::#{self.class.name}".constantize.new(h)
+        "SerializrThrift::#{self.class.name}".constantize.new(h)
       end
       
     end
