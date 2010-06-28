@@ -13,6 +13,8 @@ module Serializr
       FileUtils.mkdir_p  "#{Rails.root}/lib/serializr/"
       schema_file = open "#{Rails.root}/lib/serializr/serializr_app.thrift", "w"
       schema_file.write "namespace rb SerializrModel\n\n"
+      schema_file.write "struct date { \n\t1: i32 timestamp \n}\n"
+      schema_file.write "struct time { \n\t1: i32 timestamp \n}\n"
       schema_file.write "exception NotFoundError { \n\t1: string message \n}\n"
       schema_file.write "exception ValidationError { \n\t1: list<string> errors \n}\n"
       services = []
@@ -56,13 +58,18 @@ module Serializr
       def to_thrift_struct
         num = 0
         types_conversion = {
+          :primary_key => "i32",
+          :float => "double",
+          :decinal => "double",
           :string => "string",
           :integer => "i32",
-          :date => "i32",
           :boolean => "bool",
           :text => "string",
-          :time => "i32",
-          :datetime => "i32"
+          :time => "time",
+          :datetime => "time",
+          :date => "date",
+          :timestamp => "time",
+          :binary => "binary"
         }
         attrs = columns_hash.map do |k,v|
           num += 1
@@ -146,7 +153,13 @@ module Serializr
       
       def attrs_from_thrift rec
         rec.struct_fields.values.inject({}) do |h,f|
-          h.merge(f[:name] => rec.send(f[:name]))
+          val = rec.send(f[:name])
+          if f[:class] == SerializrModel::Time
+            val = Time.at val.timestamp
+          elsif f[:class] == SerializrModel::Date
+            val = Time.at(val.timestamp).to_date
+          end
+          h.merge(f[:name] => val)
         end
       end
       
@@ -159,9 +172,15 @@ module Serializr
     
     module InstanceMethods
       def to_thrift
-        h = self.serializable_hash.inject({}) do |hh,f|
-          v = (f[1].is_a?(Date) || f[1].is_a?(Time)) ? f[1].to_time.to_i : f[1]
-          hh.merge(f[0] => v)
+        h = self.class.columns.inject({}) do |hh,col|
+          if [:time, :datetime, :timestamp].include? col.type
+            v = SerializrModel::Time.new(:timestamp => self.send(col.name).to_i)
+          elsif col.type == :date
+            v = SerializrModel::Date.new(:timestamp => self.send(col.name).to_time.to_i)
+          else
+            v = self.send(col.name)
+          end
+          hh.merge(col.name => v)
         end
         "SerializrModel::#{self.class.name}".constantize.new(h)
       end
