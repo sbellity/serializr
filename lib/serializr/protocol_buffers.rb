@@ -19,7 +19,6 @@ module Serializr
       system "cd #{Rails.root}/lib/serializr/protobuf; rprotoc serializr_app.proto"
     end
     
-    
     def self.serialized_models
       Dir.glob( Rails.root + 'app/models/*' ).map do |f|
         klass = File.basename( f ).gsub( /^(.+).rb/, '\1').camelize.constantize
@@ -72,7 +71,7 @@ module Serializr
     end
     
     module InstanceMethods
-      def to_protobuf
+      def to_protobuf(serialize_it=false)
         h = self.class.columns.inject({}) do |hh,col|
           if [:time, :datetime, :timestamp, :date].include? col.type
             v = self.send(col.name).to_time.to_i
@@ -81,7 +80,8 @@ module Serializr
           end
           hh.merge(col.name => v)
         end
-        "SerializrProtobuf::#{self.class.name}".constantize.new(h)
+        pb = "SerializrProtobuf::#{self.class.name}".constantize.new(h)
+        serialize_it ? pb.serialize_to_string : pb
       end
     end
   end
