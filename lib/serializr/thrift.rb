@@ -22,7 +22,7 @@ module Serializr
         schema_file.write "\n\n#{klass.to_thrift_struct}"
         services << klass.to_thrift_service
       end
-      schema_file.write "\n\nservice SerializrApp { \n\t#{services.flatten.join("\n\t")} \n}"
+      schema_file.write "\n\nservice SerializrApp { \n\tstring ping()\n\t#{services.flatten.join("\n\t")} \n}"
       schema_file.close
       system "cd #{Rails.root}/lib/serializr/thrift; thrift --gen rb serializr_app.thrift"
     end
@@ -37,6 +37,9 @@ module Serializr
     def self.handler
       sm = self.serialized_models
       Class.new do |k|
+        k.send :define_method, :ping do
+          "pong @ #{Time.now}"
+        end
         k.class_eval do
           sm.map { |m| include m.thrift_handler_module }
         end
@@ -87,6 +90,17 @@ module Serializr
         services << "i32 delete#{self.name}(1: i32 id) throws (1: NotFoundError err)"
         services << "i32 create#{self.name}(1: #{self.name} #{self.name.downcase}) throws (1: ValidationError err)"
         services << "#{self.name} update#{self.name}(1: #{self.name} #{self.name.downcase})  throws (1: NotFoundError not_found_error, 2: ValidationError validation_error)"
+        
+        # Associations...
+        
+        self.reflect_on_all_associations(:has_many).map do |assoc|
+          services << "list<#{assoc.klass.name}> get#{self.name}#{assoc.klass.name.pluralize}(1: i32 id) throws (1: NotFoundError err)" if assoc.klass.respond_to? :to_thrift_struct
+        end
+
+        self.reflect_on_all_associations(:belongs_to).map do |assoc|
+          services << "#{assoc.klass.name} get#{self.name}#{assoc.klass.name}(1: i32 id) throws (1: NotFoundError err)" if assoc.klass.respond_to? :to_thrift_struct
+        end
+
         services
       end
       
@@ -147,6 +161,21 @@ module Serializr
             record_id = attrs.delete("id")
             record = klass.find_by_id(record_id)
             record.to_thrift if record.update_attributes!(attrs)
+          end
+          
+          # Associations
+          klass.reflect_on_all_associations(:belongs_to).map do |assoc|
+            m.send(:define_method, "get#{klass_name}#{assoc.klass.name}".to_sym) do |id|
+              rec = klass.find id
+              rec.send(assoc.klass.name.underscore.to_sym).to_thrift
+            end if assoc.klass.respond_to? :to_thrift_struct
+          end
+          
+          klass.reflect_on_all_associations(:has_many).map do |assoc|
+            m.send(:define_method, "get#{klass_name}#{assoc.klass.name.pluralize}".to_sym) do |id|
+              rec = klass.find id
+              rec.send(assoc.klass.name.pluralize.underscore.to_sym).map(&:to_thrift)
+            end if assoc.klass.respond_to? :to_thrift_struct
           end
         end
       end

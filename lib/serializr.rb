@@ -1,3 +1,3 @@
 require "serializr/thrift"
-require "serializr/avro"
-require "serializr/protocol_buffers"
+# require "serializr/avro"
+# require "serializr/protocol_buffers"
